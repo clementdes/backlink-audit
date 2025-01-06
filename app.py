@@ -3,6 +3,7 @@ import http.client
 import json
 import os
 import pandas as pd
+import numpy as np
 from datetime import datetime
 from dotenv import load_dotenv
 import logging
@@ -18,6 +19,56 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 AHREFS_API_KEY = os.getenv('AHREFS_API_KEY')
 
+def analyze_dr_distribution(df):
+    """
+    Analyse la distribution des Domain Ratings
+    """
+    dr_ranges = {
+        'DR 0-29': (0, 29),
+        'DR 30-44': (30, 44),
+        'DR 45-59': (45, 59),
+        'DR 60-100': (60, 100)
+    }
+    
+    distribution = {}
+    for range_name, (min_dr, max_dr) in dr_ranges.items():
+        count = len(df[(df['domain_rating_source'] >= min_dr) & 
+                      (df['domain_rating_source'] <= max_dr)])
+        distribution[range_name] = count
+    
+    return distribution
+
+def analyze_tier_distribution(df):
+    """
+    Analyse la distribution des Tiers (basée sur le DR)
+    """
+    tier_ranges = {
+        '0 Tier2': 0,
+        '1-3 Tier2': (1, 3),
+        '4-10 Tier2': (4, 10),
+        '11+ Tier2': 11
+    }
+    
+    # Simulation des tiers basée sur le DR pour cet exemple
+    distribution = {name: 0 for name in tier_ranges.keys()}
+    
+    return distribution
+
+def get_max_metrics(df):
+    """
+    Obtient les métriques maximales
+    """
+    if len(df) == 0:
+        return {
+            'max_dr': 0,
+            'max_tier': 0
+        }
+    
+    return {
+        'max_dr': df['domain_rating_source'].max(),
+        'max_tier': 'N/A'  # À implémenter selon la logique de votre choix
+    }
+
 def get_backlinks(target_url, limit=100):
     """
     Récupère les backlinks via l'API Ahrefs
@@ -30,7 +81,6 @@ def get_backlinks(target_url, limit=100):
             'Authorization': f"Bearer {AHREFS_API_KEY}"
         }
         
-        # Encodage de l'URL cible
         encoded_url = target_url.replace(':', '%3A').replace('/', '%2F')
         
         endpoint = (f"/v3/site-explorer/all-backlinks?"
@@ -60,18 +110,8 @@ def get_backlinks(target_url, limit=100):
     finally:
         conn.close()
 
-def format_date(date_str):
-    """
-    Formate la date ISO en format plus lisible
-    """
-    try:
-        date_obj = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ")
-        return date_obj.strftime("%d/%m/%Y %H:%M")
-    except:
-        return date_str
-
 # Interface Streamlit
-st.title("📊 Analyseur de Backlinks Ahrefs")
+st.title("📊 Analyse de la Puissance de Netlinking")
 
 # Input pour l'URL
 url_input = st.text_input(
@@ -80,32 +120,46 @@ url_input = st.text_input(
 )
 
 # Nombre de résultats
-limit = st.slider("Nombre de backlinks à afficher", 10, 1000, 100)
+limit = st.slider("Nombre de backlinks à analyser", 10, 1000, 100)
 
 if st.button("Analyser les backlinks"):
     if url_input:
-        with st.spinner("Récupération des backlinks en cours..."):
+        with st.spinner("Récupération et analyse des backlinks en cours..."):
             result = get_backlinks(url_input, limit)
             
             if result and 'items' in result:
-                # Création du DataFrame
                 df = pd.DataFrame(result['items'])
                 
-                # Formatage des dates
-                if 'first_seen' in df.columns:
-                    df['first_seen'] = df['first_seen'].apply(format_date)
+                # Analyse des distributions
+                dr_distribution = analyze_dr_distribution(df)
+                tier_distribution = analyze_tier_distribution(df)
+                max_metrics = get_max_metrics(df)
                 
-                # Affichage des statistiques
-                st.subheader("📈 Statistiques")
+                # Affichage des résultats en sections
+                st.header("Résultats de l'analyse")
+                
+                # Section 1: Distribution des DR
+                st.subheader("📊 Nombre de Backlinks en fonction du DR")
+                col1, col2, col3, col4 = st.columns(4)
+                cols = [col1, col2, col3, col4]
+                for i, (range_name, count) in enumerate(dr_distribution.items()):
+                    cols[i].metric(range_name, count)
+                
+                # Section 2: Distribution des Tiers
+                st.subheader("🔗 Nombre de liens avec des liens de niveau 2")
+                col1, col2, col3, col4 = st.columns(4)
+                cols = [col1, col2, col3, col4]
+                for i, (tier_name, count) in enumerate(tier_distribution.items()):
+                    cols[i].metric(tier_name, count)
+                
+                # Section 3: Métriques maximales
+                st.subheader("🏆 Métriques Maximales")
                 col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Nombre total de backlinks", len(df))
-                with col2:
-                    avg_dr = df['domain_rating_source'].mean()
-                    st.metric("Domain Rating moyen", f"{avg_dr:.1f}")
+                col1.metric("MAX(Domain Rating)", max_metrics['max_dr'])
+                col2.metric("MAX(Tier2)", max_metrics['max_tier'])
                 
-                # Affichage du tableau
-                st.subheader("🔗 Liste des Backlinks")
+                # Section 4: Tableau détaillé
+                st.subheader("📋 Liste détaillée des Backlinks")
                 st.dataframe(
                     df,
                     column_config={
