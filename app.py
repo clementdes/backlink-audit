@@ -145,6 +145,9 @@ if st.button("Analyser les backlinks"):
                 # Affichage des résultats en sections
                 st.header("Résultats de l'analyse")
                 
+                # Section 0: Total des backlinks
+                st.header(f"📈 Total des Backlinks : {len(df)}")
+
                 # Section 1: Distribution des DR
                 st.subheader("📊 Nombre de Backlinks en fonction du DR")
                 col1, col2, col3, col4 = st.columns(4)
