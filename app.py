@@ -17,9 +17,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Chargement des variables d'environnement
-load_dotenv()
-AHREFS_API_KEY = os.getenv('AHREFS_API_KEY')
+# Récupération de la clé API depuis les secrets Streamlit
+try:
+    AHREFS_API_KEY = st.secrets["AHREFS_API_KEY"]
+except Exception as e:
+    logger.error(f"Erreur lors de la récupération de la clé API: {str(e)}")
+    st.error("La clé API Ahrefs n'est pas configurée correctement. Veuillez configurer le secret 'AHREFS_API_KEY' dans Streamlit.")
+    st.stop()
 
 def analyze_dr_distribution(df):
     """
