@@ -90,44 +90,81 @@ def get_backlinks_cached(target_url, limit=100, mode="subdomains", aggregation="
     return make_ahrefs_request(endpoint, headers)
 
 @st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)
 def get_tier2_stats_cached(url):
-    """Version mise en cache des statistiques de niveau 2"""
-    headers = {
-        'Accept': "application/json",
-        'Authorization': f"Bearer {AHREFS_API_KEY}"
-    }
-    
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    encoded_url = url.replace(':', '%3A').replace('/', '%2F')
-    endpoint = f"/v3/site-explorer/backlinks-stats?target={encoded_url}&mode=exact&date={current_date}"
-    
+    """Version mise en cache des statistiques de niveau 2 avec meilleure gestion des erreurs"""
     try:
+        headers = {
+            'Accept': "application/json",
+            'Authorization': f"Bearer {AHREFS_API_KEY}"
+        }
+        
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        encoded_url = url.replace(':', '%3A').replace('/', '%2F')
+        endpoint = f"/v3/site-explorer/backlinks-stats?target={encoded_url}&mode=exact&date={current_date}"
+        
         stats = make_ahrefs_request(endpoint, headers)
-        live_backlinks = stats.get('metrics', {}).get('live', 0)
-        live_refdomains = stats.get('metrics', {}).get('live_refdomains', 0)
+        
+        if not stats or 'metrics' not in stats:
+            logger.warning(f"Pas de métriques trouvées pour {url}")
+            return 0, 0
+            
+        live_backlinks = stats['metrics'].get('live', 0)
+        live_refdomains = stats['metrics'].get('live_refdomains', 0)
+        
         return live_backlinks, live_refdomains
+        
     except Exception as e:
         logger.error(f"Erreur lors de l'analyse Tier 2 pour {url}: {str(e)}")
         return 0, 0
 
 def analyze_tier2_links_parallel(df, progress_bar, status_text):
-    """Analyse parallèle des liens de niveau 2"""
+    """Analyse parallèle des liens de niveau 2 avec gestion correcte du contexte Streamlit"""
     tier2_results = []
     total_urls = len(df)
-    processed = 0
+    
+    # On utilise un compteur thread-safe
+    from threading import Lock
+    processed_lock = Lock()
+    processed_count = 0
     
     def process_url(url):
-        nonlocal processed
-        result = get_tier2_stats_cached(url)
-        processed += 1
-        progress = processed / total_urls
-        progress_bar.progress(progress)
-        status_text.text(f"Analyse de l'URL {processed}/{total_urls}")
-        return result
+        nonlocal processed_count
+        try:
+            result = get_tier2_stats_cached(url)
+            
+            # Mise à jour thread-safe du compteur
+            with processed_lock:
+                nonlocal processed_count
+                processed_count += 1
+                
+                # On évite d'appeler les éléments Streamlit directement depuis le thread
+                current_progress = processed_count / total_urls
+                
+            return result
+        except Exception as e:
+            logger.error(f"Erreur lors de l'analyse de {url}: {str(e)}")
+            return (0, 0)
     
+    # Exécution parallèle
     with ThreadPoolExecutor(max_workers=5) as executor:
-        tier2_results = list(executor.map(process_url, df['url_from']))
+        futures = [executor.submit(process_url, url) for url in df['url_from']]
+        
+        # Mise à jour de la barre de progression dans le thread principal
+        while any(not f.done() for f in futures):
+            current_progress = processed_count / total_urls
+            progress_bar.progress(current_progress)
+            status_text.text(f"Analyse de l'URL {processed_count}/{total_urls}")
+            time.sleep(0.1)
+        
+        # Récupération des résultats
+        tier2_results = [f.result() for f in futures]
     
+    # Mise à jour finale de la progression
+    progress_bar.progress(1.0)
+    status_text.text(f"Analyse terminée! {total_urls}/{total_urls} URLs traitées")
+    
+    # Séparation des résultats en deux listes
     tier2_live_links, tier2_live_refdomains = zip(*tier2_results)
     return list(tier2_live_links), list(tier2_live_refdomains)
 
