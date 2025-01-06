@@ -74,7 +74,24 @@ def create_yearly_plot(yearly_data):
     
     return fig
 
-def analyze_yearly_distribution(df):
+def analyze_dr_distribution(df):
+    """
+    Analyse la distribution des Domain Ratings
+    """
+    dr_ranges = {
+        'DR 0-29': (0, 29),
+        'DR 30-44': (30, 44),
+        'DR 45-59': (45, 59),
+        'DR 60-100': (60, 100)
+    }
+    
+    distribution = {}
+    for range_name, (min_dr, max_dr) in dr_ranges.items():
+        count = len(df[(df['domain_rating_source'] >= min_dr) & 
+                      (df['domain_rating_source'] <= max_dr)])
+        distribution[range_name] = count
+    
+    return distributiondef analyze_yearly_distribution(df):
     """
     Analyse la distribution des backlinks par année
     """
