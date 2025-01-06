@@ -246,8 +246,12 @@ def get_tier2_stats(url):
         if response.status == 200:
             try:
                 stats = json.loads(data.decode("utf-8"))
-                return stats.get('stats', {}).get('backlinks_live', 0)
-            except json.JSONDecodeError:
+                logger.info(f"Stats Tier2 pour {url}: {stats}")  # Log pour debug
+                if 'info' in stats:
+                    return stats['info'].get('backlinks', {}).get('live', 0)
+                return 0
+            except json.JSONDecodeError as e:
+                logger.error(f"Erreur JSON pour {url}: {e}")
                 return 0
         return 0
     except Exception as e:
