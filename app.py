@@ -134,8 +134,8 @@ if st.button("Analyser les backlinks"):
         with st.spinner("Récupération et analyse des backlinks en cours..."):
             result = get_backlinks(url_input, limit)
             
-            if result and 'items' in result:
-                df = pd.DataFrame(result['items'])
+            if result and 'backlinks' in result:
+                df = pd.DataFrame(result['backlinks'])
                 
                 # Analyse des distributions
                 dr_distribution = analyze_dr_distribution(df)
