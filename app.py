@@ -228,6 +228,10 @@ def get_tier2_stats(url):
     """
     Récupère les statistiques des backlinks pour une URL donnée
     """
+    logger.info("="*50)
+    logger.info("LIENS TIER 2 - DÉBUT ANALYSE")
+    logger.info(f"LIENS TIER 2 - Analyse de l'URL: {url}")
+    
     try:
         conn = http.client.HTTPSConnection("api.ahrefs.com")
         
@@ -239,26 +243,42 @@ def get_tier2_stats(url):
         encoded_url = url.replace(':', '%3A').replace('/', '%2F')
         endpoint = f"/v3/site-explorer/backlinks-stats?target={encoded_url}&mode=exact"
         
+        logger.info(f"LIENS TIER 2 - Endpoint appelé: {endpoint}")
+        
         conn.request("GET", endpoint, headers=headers)
         response = conn.getresponse()
         data = response.read()
         
+        logger.info(f"LIENS TIER 2 - Statut de la réponse: {response.status}")
+        
         if response.status == 200:
+            decoded_data = data.decode("utf-8")
+            logger.info(f"LIENS TIER 2 - Réponse brute: {decoded_data}")
+            
             try:
-                stats = json.loads(data.decode("utf-8"))
-                logger.info(f"Stats Tier2 pour {url}: {stats}")  # Log pour debug
+                stats = json.loads(decoded_data)
+                logger.info(f"LIENS TIER 2 - Stats complètes: {json.dumps(stats, indent=2)}")
+                
                 if 'info' in stats:
-                    return stats['info'].get('backlinks', {}).get('live', 0)
+                    backlinks_count = stats['info'].get('backlinks', {}).get('live', 0)
+                    logger.info(f"LIENS TIER 2 - Nombre de backlinks trouvé: {backlinks_count}")
+                    return backlinks_count
+                else:
+                    logger.warning("LIENS TIER 2 - Structure 'info' non trouvée dans la réponse")
                 return 0
             except json.JSONDecodeError as e:
-                logger.error(f"Erreur JSON pour {url}: {e}")
+                logger.error(f"LIENS TIER 2 - Erreur JSON: {e}")
                 return 0
-        return 0
+        else:
+            logger.error(f"LIENS TIER 2 - Erreur API: {data.decode('utf-8')}")
+            return 0
     except Exception as e:
-        logger.error(f"Erreur lors de la récupération des stats Tier2 pour {url}: {str(e)}")
+        logger.error(f"LIENS TIER 2 - Erreur lors de la récupération pour {url}: {str(e)}")
         return 0
     finally:
         conn.close()
+        logger.info("LIENS TIER 2 - FIN ANALYSE")
+        logger.info("="*50)
 
 if st.button("Analyser les backlinks"):
     if url_input:
