@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
 from threading import Lock
+from urllib.parse import quote
 
 # Configuration du logging
 logging.basicConfig(
@@ -17,6 +18,18 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+def encode_url_for_ahrefs(url):
+    """Encode correctement une URL pour l'API Ahrefs"""
+    # Supprime les espaces avant et après
+    url = url.strip()
+    
+    # S'assure que l'URL commence par http:// ou https://
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    # Encode l'URL correctement
+    return quote(url, safe='')
 
 # Récupération de la clé API depuis les secrets Streamlit
 try:
@@ -51,45 +64,79 @@ rate_limiter = RateLimiter()
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def make_ahrefs_request(endpoint, headers):
     """Fonction générique pour faire des requêtes à l'API Ahrefs avec retry"""
+    conn = None
     try:
+        logger.info(f"Tentative de requête API Ahrefs - Endpoint: {endpoint}")
         rate_limiter.wait()
-        conn = http.client.HTTPSConnection("api.ahrefs.com")
+        conn = http.client.HTTPSConnection("api.ahrefs.com", timeout=30)
         
-        logger.info(f"Requête API Ahrefs - Endpoint: {endpoint}")
+        logger.info(f"Envoi de la requête avec headers: {headers}")
         conn.request("GET", endpoint, headers=headers)
         
+        logger.info("Attente de la réponse...")
         response = conn.getresponse()
         data = response.read()
         
         logger.info(f"Statut de la réponse: {response.status}")
+        logger.info(f"Headers de réponse: {response.getheaders()}")
         
         if response.status == 200:
-            return json.loads(data.decode("utf-8"))
+            decoded_data = data.decode("utf-8")
+            logger.info(f"Début des données décodées: {decoded_data[:200]}...")
+            return json.loads(decoded_data)
         else:
             error_msg = data.decode("utf-8")
-            logger.error(f"Erreur API: {error_msg}")
-            raise Exception(f"Erreur API: {error_msg}")
+            logger.error(f"Erreur API (Status {response.status}): {error_msg}")
+            raise Exception(f"Erreur API (Status {response.status}): {error_msg}")
+            
+    except http.client.HTTPException as e:
+        logger.error(f"Erreur HTTP lors de la requête: {str(e)}")
+        raise Exception(f"Erreur HTTP: {str(e)}")
+    except json.JSONDecodeError as e:
+        logger.error(f"Erreur de décodage JSON: {str(e)}")
+        raise Exception(f"Erreur de décodage JSON: {str(e)}")
+    except Exception as e:
+        logger.error(f"Erreur inattendue: {str(e)}")
+        raise
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 @st.cache_data(ttl=3600)
 def get_backlinks_cached(target_url, limit=100, mode="subdomains", aggregation="all"):
     """Version mise en cache de la requête de backlinks"""
-    headers = {
-        'Accept': "application/json",
-        'Authorization': f"Bearer {AHREFS_API_KEY}"
-    }
-    
-    encoded_url = target_url.replace(':', '%3A').replace('/', '%2F')
-    endpoint = (f"/v3/site-explorer/all-backlinks?"
-               f"limit={limit}&"
-               f"select=domain_rating_source,url_from,first_seen,link_type&"
-               f"target={encoded_url}&"
-               f"mode={mode}&"
-               f"history=live&"
-               f"aggregation={aggregation}")
-    
-    return make_ahrefs_request(endpoint, headers)
+    try:
+        logger.info(f"Début de get_backlinks_cached pour URL: {target_url}")
+        
+        headers = {
+            'Accept': "application/json",
+            'Authorization': f"Bearer {AHREFS_API_KEY}"
+        }
+        
+        encoded_url = encode_url_for_ahrefs(target_url)
+        logger.info(f"URL encodée: {encoded_url}")
+        
+        endpoint = (f"/v3/site-explorer/all-backlinks?"
+                   f"limit={limit}&"
+                   f"select=domain_rating_source,url_from,first_seen,link_type&"
+                   f"target={encoded_url}&"
+                   f"mode={mode}&"
+                   f"history=live&"
+                   f"aggregation={aggregation}")
+        
+        logger.info(f"Endpoint construit: {endpoint}")
+        
+        result = make_ahrefs_request(endpoint, headers)
+        
+        if not result:
+            raise Exception("Aucun résultat retourné par l'API")
+            
+        logger.info(f"Résultat reçu avec {len(result.get('backlinks', []))} backlinks")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Erreur dans get_backlinks_cached: {str(e)}")
+        raise Exception(f"Erreur lors de la récupération des backlinks: {str(e)}")
 
 @st.cache_data(ttl=3600)
 def get_our_domain_backlinks(our_domain, mode="subdomains"):
