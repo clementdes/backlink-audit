@@ -7,6 +7,8 @@ import numpy as np
 from datetime import datetime
 from dotenv import load_dotenv
 import logging
+import plotly.graph_objects as go
+import plotly.express as px
 
 # Configuration du logging
 logging.basicConfig(
@@ -18,6 +20,55 @@ logger = logging.getLogger(__name__)
 # Chargement des variables d'environnement
 load_dotenv()
 AHREFS_API_KEY = os.getenv('AHREFS_API_KEY')
+
+def analyze_yearly_distribution(df):
+    """
+    Analyse la distribution des backlinks par année
+    """
+    # Convertir first_seen en datetime
+    df['year'] = pd.to_datetime(df['first_seen']).dt.year
+    
+    # Compter les backlinks par année
+    yearly_counts = df['year'].value_counts().sort_index()
+    
+    # Calculer les cumuls
+    cumulative_counts = yearly_counts.cumsum()
+    
+    # Créer un DataFrame avec les deux informations
+    yearly_data = pd.DataFrame({
+        'Année': yearly_counts.index,
+        '# de liens': yearly_counts.values,
+        'CUMULÉS': cumulative_counts.values
+    })
+    
+    return yearly_data.sort_values('Année')
+
+def create_yearly_plot(yearly_data):
+    """
+    Crée un graphique des backlinks par année
+    """
+    fig = go.Figure()
+    
+    # Ajouter les barres pour le nombre de backlinks
+    fig.add_trace(
+        go.Scatter(
+            x=yearly_data['Année'],
+            y=yearly_data['# de liens'],
+            name='# de backlinks',
+            mode='lines+markers'
+        )
+    )
+    
+    # Personnalisation du graphique
+    fig.update_layout(
+        title='Nombre de domaines Référents par années',
+        xaxis_title='Année',
+        yaxis_title='Nombre de backlinks',
+        height=400,
+        showlegend=True
+    )
+    
+    return fig
 
 def analyze_dr_distribution(df):
     """
@@ -37,37 +88,6 @@ def analyze_dr_distribution(df):
         distribution[range_name] = count
     
     return distribution
-
-def analyze_tier_distribution(df):
-    """
-    Analyse la distribution des Tiers (basée sur le DR)
-    """
-    tier_ranges = {
-        '0 Tier2': 0,
-        '1-3 Tier2': (1, 3),
-        '4-10 Tier2': (4, 10),
-        '11+ Tier2': 11
-    }
-    
-    # Simulation des tiers basée sur le DR pour cet exemple
-    distribution = {name: 0 for name in tier_ranges.keys()}
-    
-    return distribution
-
-def get_max_metrics(df):
-    """
-    Obtient les métriques maximales
-    """
-    if len(df) == 0:
-        return {
-            'max_dr': 0,
-            'max_tier': 0
-        }
-    
-    return {
-        'max_dr': df['domain_rating_source'].max(),
-        'max_tier': 'N/A'  # À implémenter selon la logique de votre choix
-    }
 
 def get_backlinks(target_url, limit=100):
     """
@@ -89,7 +109,7 @@ def get_backlinks(target_url, limit=100):
                    f"target={encoded_url}&"
                    f"mode=subdomains&"
                    f"history=live&"
-                   f"aggregation=all")
+                   f"aggregation=similar_links")
         
         logger.info(f"Envoi de la requête à l'API Ahrefs pour : {target_url}")
         conn.request("GET", endpoint, headers=headers)
@@ -102,12 +122,7 @@ def get_backlinks(target_url, limit=100):
         if response.status == 200:
             decoded_data = data.decode("utf-8")
             logger.info(f"Réponse de l'API: {decoded_data}")
-            try:
-                json_data = json.loads(decoded_data)
-                return json_data
-            except json.JSONDecodeError as e:
-                logger.error(f"Erreur de décodage JSON: {str(e)}")
-                return None
+            return json.loads(decoded_data)
         else:
             logger.error(f"Erreur API: {data.decode('utf-8')}")
             return None
@@ -138,38 +153,39 @@ if st.button("Analyser les backlinks"):
             if result and 'backlinks' in result:
                 df = pd.DataFrame(result['backlinks'])
                 
-                # Analyse des distributions
-                dr_distribution = analyze_dr_distribution(df)
-                tier_distribution = analyze_tier_distribution(df)
-                max_metrics = get_max_metrics(df)
-                
-                # Affichage des résultats en sections
-                st.header("Résultats de l'analyse")
-                
                 # Section 0: Total des backlinks
                 st.header(f"📈 Total des Backlinks : {len(df)}")
 
-                # Section 1: Distribution des DR
+                # Section 1: Distribution temporelle
+                st.subheader("📅 Distribution temporelle des backlinks")
+                
+                # Analyse par année
+                yearly_data = analyze_yearly_distribution(df)
+                
+                # Affichage du tableau des backlinks par année
+                st.markdown("### # de backlinks créés par année")
+                st.dataframe(
+                    yearly_data,
+                    hide_index=True,
+                    column_config={
+                        'Année': 'Année',
+                        '# de liens': 'Nombre de liens',
+                        'CUMULÉS': 'Cumulés'
+                    }
+                )
+                
+                # Graphique de l'évolution
+                st.plotly_chart(create_yearly_plot(yearly_data))
+                
+                # Section 2: Distribution des DR
                 st.subheader("📊 Nombre de Backlinks en fonction du DR")
+                dr_distribution = analyze_dr_distribution(df)
                 col1, col2, col3, col4 = st.columns(4)
                 cols = [col1, col2, col3, col4]
                 for i, (range_name, count) in enumerate(dr_distribution.items()):
                     cols[i].metric(range_name, count)
                 
-                # Section 2: Distribution des Tiers
-                st.subheader("🔗 Nombre de liens avec des liens de niveau 2")
-                col1, col2, col3, col4 = st.columns(4)
-                cols = [col1, col2, col3, col4]
-                for i, (tier_name, count) in enumerate(tier_distribution.items()):
-                    cols[i].metric(tier_name, count)
-                
-                # Section 3: Métriques maximales
-                st.subheader("🏆 Métriques Maximales")
-                col1, col2 = st.columns(2)
-                col1.metric("MAX(Domain Rating)", max_metrics['max_dr'])
-                col2.metric("MAX(Tier2)", max_metrics['max_tier'])
-                
-                # Section 4: Tableau détaillé
+                # Section 3: Tableau détaillé
                 st.subheader("📋 Liste détaillée des Backlinks")
                 st.dataframe(
                     df,
