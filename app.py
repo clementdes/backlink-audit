@@ -91,7 +91,9 @@ def analyze_dr_distribution(df):
                       (df['domain_rating_source'] <= max_dr)])
         distribution[range_name] = count
     
-    return distributiondef analyze_yearly_distribution(df):
+    return distribution
+
+def analyze_yearly_distribution(df):
     """
     Analyse la distribution des backlinks par année
     """
