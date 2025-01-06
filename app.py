@@ -64,17 +64,32 @@ def analyze_yearly_distribution(df):
 
 def analyze_tier_distribution(df):
     """
-    Analyse la distribution des Tiers (basée sur le DR)
+    Analyse la distribution des Tiers (basée sur le nombre de backlinks)
     """
+    if 'tier2_links' not in df.columns:
+        return {
+            '0 Tier2': 0,
+            '1-3 Tier2': 0,
+            '4-10 Tier2': 0,
+            '11+ Tier2': 0
+        }
+    
     tier_ranges = {
-        '0 Tier2': 0,
+        '0 Tier2': (0, 0),
         '1-3 Tier2': (1, 3),
         '4-10 Tier2': (4, 10),
-        '11+ Tier2': 11
+        '11+ Tier2': (11, float('inf'))
     }
     
-    # Simulation des tiers basée sur le DR pour cet exemple
-    distribution = {name: 0 for name in tier_ranges.keys()}
+    distribution = {}
+    for range_name, (min_links, max_links) in tier_ranges.items():
+        if min_links == max_links:  # Cas spécial pour "0 Tier2"
+            count = len(df[df['tier2_links'] == min_links])
+        elif max_links == float('inf'):  # Cas pour "11+ Tier2"
+            count = len(df[df['tier2_links'] >= min_links])
+        else:
+            count = len(df[(df['tier2_links'] >= min_links) & (df['tier2_links'] <= max_links)])
+        distribution[range_name] = count
     
     return distribution
 
@@ -147,7 +162,7 @@ def get_backlinks(target_url, limit=100):
                    f"target={encoded_url}&"
                    f"mode=subdomains&"
                    f"history=live&"
-                   f"aggregation=all")
+                   f"aggregation=similar_links")
         
         logger.info(f"Envoi de la requête à l'API Ahrefs pour : {target_url}")
         conn.request("GET", endpoint, headers=headers)
@@ -185,8 +200,44 @@ url_input = st.text_input(
     placeholder="ex: https://example.com"
 )
 
-# Nombre de résultats
-limit = st.slider("Nombre de backlinks à analyser", 10, 1000, 100)
+# Options d'analyse
+col1, col2 = st.columns(2)
+with col1:
+    limit = st.slider("Nombre de backlinks à analyser", 10, 1000, 100)
+with col2:
+    check_tier2 = st.checkbox("Analyser les liens de Niveau 2", value=False)
+
+def get_tier2_stats(url):
+    """
+    Récupère les statistiques des backlinks pour une URL donnée
+    """
+    try:
+        conn = http.client.HTTPSConnection("api.ahrefs.com")
+        
+        headers = {
+            'Accept': "application/json",
+            'Authorization': f"Bearer {AHREFS_API_KEY}"
+        }
+        
+        encoded_url = url.replace(':', '%3A').replace('/', '%2F')
+        endpoint = f"/v3/site-explorer/backlinks-stats?target={encoded_url}&mode=exact"
+        
+        conn.request("GET", endpoint, headers=headers)
+        response = conn.getresponse()
+        data = response.read()
+        
+        if response.status == 200:
+            try:
+                stats = json.loads(data.decode("utf-8"))
+                return stats.get('stats', {}).get('backlinks_live', 0)
+            except json.JSONDecodeError:
+                return 0
+        return 0
+    except Exception as e:
+        logger.error(f"Erreur lors de la récupération des stats Tier2 pour {url}: {str(e)}")
+        return 0
+    finally:
+        conn.close()
 
 if st.button("Analyser les backlinks"):
     if url_input:
@@ -195,6 +246,28 @@ if st.button("Analyser les backlinks"):
             
             if result and 'backlinks' in result:
                 df = pd.DataFrame(result['backlinks'])
+                
+                # Analyse des liens Tier 2 si l'option est cochée
+                if check_tier2:
+                    st.info("Analyse des liens de Niveau 2 en cours... Cette opération peut prendre quelques minutes.")
+                    
+                    # Créer une barre de progression
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    # Analyser les liens Tier 2 pour chaque URL
+                    tier2_links = []
+                    total_urls = len(df)
+                    
+                    for i, url in enumerate(df['url_from']):
+                        status_text.text(f"Analyse de l'URL {i+1}/{total_urls}")
+                        tier2_count = get_tier2_stats(url)
+                        tier2_links.append(tier2_count)
+                        progress_bar.progress((i + 1) / total_urls)
+                    
+                    # Ajouter les résultats au DataFrame
+                    df['tier2_links'] = tier2_links
+                    status_text.text("Analyse des liens de Niveau 2 terminée!")
                 
                 # Section 0: Total des backlinks
                 st.header(f"📈 Total des Backlinks : {len(df)}")
@@ -255,7 +328,8 @@ if st.button("Analyser les backlinks"):
                         "domain_rating_source": "DR Source",
                         "url_from": "URL Source",
                         "first_seen": "Première vue",
-                        "link_type": "Type de lien"
+                        "link_type": "Type de lien",
+                        "tier2_links": "Liens de Niveau 2" if 'tier2_links' in df.columns else None
                     },
                     hide_index=True
                 )
