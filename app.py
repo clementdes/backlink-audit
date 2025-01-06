@@ -160,9 +160,9 @@ def get_backlinks(target_url, limit=100):
                    f"limit={limit}&"
                    f"select=domain_rating_source,url_from,first_seen,link_type&"
                    f"target={encoded_url}&"
-                   f"mode=subdomains&"
+                   f"mode={mode}&"
                    f"history=live&"
-                   f"aggregation=all")
+                   f"aggregation={aggregation}")
         
         logger.info(f"Envoi de la requête à l'API Ahrefs pour : {target_url}")
         conn.request("GET", endpoint, headers=headers)
@@ -203,8 +203,25 @@ url_input = st.text_input(
 # Options d'analyse
 col1, col2 = st.columns(2)
 with col1:
+    # Sélecteur pour l'agrégation
+    aggregation = st.selectbox(
+        "Mode d'agrégation des backlinks",
+        options=["all", "similar_links", "1_per_domain"],
+        index=0,  # "all" par défaut
+        help="all: Tous les backlinks\nsimilar_links: Regroupe les liens similaires\n1_per_domain: Un seul lien par domaine"
+    )
+    
     limit = st.slider("Nombre de backlinks à analyser", 10, 1000, 100)
+
 with col2:
+    # Sélecteur pour le mode de recherche
+    mode = st.selectbox(
+        "Mode de recherche",
+        options=["subdomains", "exact", "prefix", "domain"],
+        index=0,  # "subdomains" par défaut
+        help="subdomains: Inclut tous les sous-domaines\nexact: URL exacte uniquement\nprefix: URLs commençant par la cible\ndomain: Domaine entier"
+    )
+    
     check_tier2 = st.checkbox("Analyser les liens de Niveau 2", value=False)
 
 def get_tier2_stats(url):
