@@ -240,8 +240,11 @@ def get_tier2_stats(url):
             'Authorization': f"Bearer {AHREFS_API_KEY}"
         }
         
+        # Ajout de la date du jour pour l'API
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        
         encoded_url = url.replace(':', '%3A').replace('/', '%2F')
-        endpoint = f"/v3/site-explorer/backlinks-stats?target={encoded_url}&mode=exact"
+        endpoint = f"/v3/site-explorer/backlinks-stats?target={encoded_url}&mode=exact&date={current_date}"
         
         logger.info(f"LIENS TIER 2 - Endpoint appelé: {endpoint}")
         
