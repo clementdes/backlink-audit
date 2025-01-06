@@ -99,7 +99,14 @@ def get_backlinks(target_url, limit=100):
         logger.info(f"Statut de la réponse : {response.status}")
         
         if response.status == 200:
-            return json.loads(data.decode("utf-8"))
+            decoded_data = data.decode("utf-8")
+            logger.info(f"Réponse de l'API: {decoded_data}")
+            try:
+                json_data = json.loads(decoded_data)
+                return json_data
+            except json.JSONDecodeError as e:
+                logger.error(f"Erreur de décodage JSON: {str(e)}")
+                return None
         else:
             logger.error(f"Erreur API: {data.decode('utf-8')}")
             return None
