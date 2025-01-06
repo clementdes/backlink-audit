@@ -195,7 +195,7 @@ def get_backlinks(target_url, limit=1000):
     """
     url = "https://api.dataforseo.com/v3/backlinks/backlinks/live"
     
-    payload = json.dumps([{
+    payload_data = {
         "target": target_url,
         "limit": limit,
         "internal_list_limit": 10,
@@ -204,27 +204,61 @@ def get_backlinks(target_url, limit=1000):
         "exclude_internal_backlinks": True,
         "include_indirect_links": True,
         "mode": "as_is"
-    }])
+    }
+    payload = json.dumps([payload_data])
     
     headers = {
         'Authorization': f'Basic {credentials}',
         'Content-Type': 'application/json'
     }
     
+    logger.info("="*50)
+    logger.info("DÉBUT REQUÊTE DATAFORSEO")
+    logger.info(f"URL appelée: {url}")
+    logger.info(f"Payload envoyé: {json.dumps(payload_data, indent=2)}")
+    logger.info(f"Headers: {json.dumps({k: '***' if k == 'Authorization' else v for k, v in headers.items()}, indent=2)}")
+    
     try:
         response = requests.post(url, headers=headers, data=payload)
-        response.raise_for_status()  # Lève une exception pour les codes d'erreur HTTP
+        logger.info(f"Status code: {response.status_code}")
+        logger.info(f"Response headers: {dict(response.headers)}")
         
-        data = response.json()
-        if data.get('status_code') == 20000:  # Code de succès de DataForSeo
-            return data.get('tasks', [{}])[0].get('result', [])
-        else:
-            logger.error(f"Erreur API DataForSeo: {data}")
+        try:
+            response_json = response.json()
+            logger.info(f"Response body: {json.dumps(response_json, indent=2)}")
+            
+            if response.status_code == 200:
+                if response_json.get('status_code') == 20000:  # Code de succès de DataForSeo
+                    tasks = response_json.get('tasks', [{}])
+                    logger.info(f"Nombre de tâches reçues: {len(tasks)}")
+                    
+                    if tasks and tasks[0].get('result'):
+                        result = tasks[0].get('result', [])
+                        logger.info(f"Nombre total de backlinks: {result[0].get('total_count', 0) if result else 0}")
+                        logger.info(f"Nombre de backlinks retournés: {result[0].get('items_count', 0) if result else 0}")
+                        return result[0]
+                    else:
+                        logger.error("Aucun résultat dans la réponse")
+                        return None
+                else:
+                    error_message = response_json.get('status_message', 'Erreur inconnue')
+                    logger.error(f"Erreur API DataForSeo (code {response_json.get('status_code')}): {error_message}")
+                    return None
+            else:
+                logger.error(f"Erreur HTTP {response.status_code}: {response.text}")
+                return None
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"Erreur de décodage JSON: {str(e)}")
+            logger.error(f"Réponse brute: {response.text}")
             return None
             
     except Exception as e:
-        logger.error(f"Erreur lors de la récupération des backlinks: {str(e)}")
+        logger.error(f"Erreur lors de la requête: {str(e)}")
         return None
+    finally:
+        logger.info("FIN REQUÊTE DATAFORSEO")
+        logger.info("="*50)
 
 # Interface Streamlit
 st.title("📊 Analyse de la Puissance de Netlinking (DataForSeo)")
