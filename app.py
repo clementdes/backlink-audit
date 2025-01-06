@@ -87,7 +87,7 @@ def get_backlinks(target_url, limit=100):
                    f"limit={limit}&"
                    f"select=domain_rating_source,url_from,first_seen,link_type&"
                    f"target={encoded_url}&"
-                   f"mode=all&"
+                   f"mode=subdomains&"
                    f"aggregation=all")
         
         logger.info(f"Envoi de la requête à l'API Ahrefs pour : {target_url}")
