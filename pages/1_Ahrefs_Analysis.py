@@ -1,14 +1,13 @@
 import streamlit as st
 import http.client
 import json
-import os
 import pandas as pd
-import numpy as np
-from datetime import datetime
-from dotenv import load_dotenv
+from datetime import datetime, timedelta
 import logging
 import plotly.graph_objects as go
-import plotly.express as px
+from concurrent.futures import ThreadPoolExecutor
+import time
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Configuration du logging
 logging.basicConfig(
@@ -22,8 +21,122 @@ try:
     AHREFS_API_KEY = st.secrets["AHREFS_API_KEY"]
 except Exception as e:
     logger.error(f"Erreur lors de la récupération de la clé API: {str(e)}")
-    st.error("La clé API Ahrefs n'est pas configurée correctement. Veuillez configurer le secret 'AHREFS_API_KEY' dans Streamlit.")
+    st.error("La clé API Ahrefs n'est pas configurée correctement.")
     st.stop()
+
+class RateLimiter:
+    def __init__(self, requests_per_second=5):
+        self.requests_per_second = requests_per_second
+        self.requests = []
+    
+    def wait(self):
+        now = datetime.now()
+        # Nettoyer les anciennes requêtes
+        self.requests = [req for req in self.requests 
+                        if now - req < timedelta(seconds=1)]
+        
+        # Si trop de requêtes, attendre
+        if len(self.requests) >= self.requests_per_second:
+            sleep_time = 1.0 - (now - self.requests[0]).total_seconds()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+        
+        self.requests.append(now)
+
+rate_limiter = RateLimiter()
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def make_ahrefs_request(endpoint, headers):
+    """
+    Fonction générique pour faire des requêtes à l'API Ahrefs avec retry
+    """
+    try:
+        rate_limiter.wait()  # Respecter le rate limit
+        conn = http.client.HTTPSConnection("api.ahrefs.com")
+        
+        logger.info(f"Requête API Ahrefs - Endpoint: {endpoint}")
+        conn.request("GET", endpoint, headers=headers)
+        
+        response = conn.getresponse()
+        data = response.read()
+        
+        logger.info(f"Statut de la réponse: {response.status}")
+        
+        if response.status == 200:
+            return json.loads(data.decode("utf-8"))
+        else:
+            error_msg = data.decode("utf-8")
+            logger.error(f"Erreur API: {error_msg}")
+            raise Exception(f"Erreur API: {error_msg}")
+    finally:
+        conn.close()
+
+@st.cache_data(ttl=3600)  # Cache valide pendant 1 heure
+def get_backlinks_cached(target_url, limit, mode, aggregation):
+    """
+    Version mise en cache de get_backlinks
+    """
+    headers = {
+        'Accept': "application/json",
+        'Authorization': f"Bearer {AHREFS_API_KEY}"
+    }
+    
+    encoded_url = target_url.replace(':', '%3A').replace('/', '%2F')
+    endpoint = (f"/v3/site-explorer/all-backlinks?"
+               f"limit={limit}&"
+               f"select=domain_rating_source,url_from,first_seen,link_type&"
+               f"target={encoded_url}&"
+               f"mode={mode}&"
+               f"history=live&"
+               f"aggregation={aggregation}")
+    
+    return make_ahrefs_request(endpoint, headers)
+
+@st.cache_data(ttl=3600)
+def get_tier2_stats_cached(url):
+    """
+    Version mise en cache de get_tier2_stats
+    """
+    headers = {
+        'Accept': "application/json",
+        'Authorization': f"Bearer {AHREFS_API_KEY}"
+    }
+    
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    encoded_url = url.replace(':', '%3A').replace('/', '%2F')
+    endpoint = f"/v3/site-explorer/backlinks-stats?target={encoded_url}&mode=exact&date={current_date}"
+    
+    try:
+        stats = make_ahrefs_request(endpoint, headers)
+        live_backlinks = stats.get('metrics', {}).get('live', 0)
+        live_refdomains = stats.get('metrics', {}).get('live_refdomains', 0)
+        return live_backlinks, live_refdomains
+    except Exception as e:
+        logger.error(f"Erreur lors de l'analyse Tier 2 pour {url}: {str(e)}")
+        return 0, 0
+
+def analyze_tier2_links_parallel(df, progress_bar, status_text):
+    """
+    Analyse parallèle des liens de niveau 2
+    """
+    tier2_results = []
+    total_urls = len(df)
+    processed = 0
+    
+    def process_url(url):
+        nonlocal processed
+        result = get_tier2_stats_cached(url)
+        processed += 1
+        progress = processed / total_urls
+        progress_bar.progress(progress)
+        status_text.text(f"Analyse de l'URL {processed}/{total_urls}")
+        return result
+    
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        tier2_results = list(executor.map(process_url, df['url_from']))
+    
+    tier2_live_links, tier2_live_refdomains = zip(*tier2_results)
+    return list(tier2_live_links), list(tier2_live_refdomains)
 
 def analyze_dr_distribution(df):
     """
@@ -287,127 +400,119 @@ with col2:
 
 if st.button("Analyser les backlinks"):
     if url_input:
-        with st.spinner("Récupération et analyse des backlinks en cours..."):
-            result = get_backlinks(url_input, limit)
-            
-            if result and 'backlinks' in result:
-                df = pd.DataFrame(result['backlinks'])
+        try:
+            with st.spinner("Récupération et analyse des backlinks en cours..."):
+                # Utilisation de la version cachée
+                result = get_backlinks_cached(url_input, limit, mode, aggregation)
                 
-                # Analyse des liens Tier 2 si l'option est cochée
-                if check_tier2:
-                    st.info("Analyse des liens de Niveau 2 en cours... Cette opération peut prendre quelques minutes.")
+                if result and 'backlinks' in result:
+                    df = pd.DataFrame(result['backlinks'])
                     
-                    # Créer une barre de progression
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
+                    # Analyse des liens Tier 2 si l'option est cochée
+                    if check_tier2 and len(df) > 0:
+                        st.info("Analyse des liens de Niveau 2 en cours... Cette opération peut prendre quelques minutes.")
+                        
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        # Utilisation de l'analyse parallèle
+                        tier2_live_links, tier2_live_refdomains = analyze_tier2_links_parallel(
+                            df, progress_bar, status_text
+                        )
+                        
+                        df['tier2_live_links'] = tier2_live_links
+                        df['tier2_live_refdomains'] = tier2_live_refdomains
+                        status_text.text("Analyse des liens de Niveau 2 terminée!")
                     
-                    # Listes pour stocker les résultats
-                    tier2_live_links = []
-                    tier2_live_refdomains = []
-                    total_urls = len(df)
-                    
-                    for i, url in enumerate(df['url_from']):
-                        status_text.text(f"Analyse de l'URL {i+1}/{total_urls}")
-                        live_links, live_refdomains = get_tier2_stats(url)
-                        tier2_live_links.append(live_links)
-                        tier2_live_refdomains.append(live_refdomains)
-                        progress_bar.progress((i + 1) / total_urls)
-                    
-                    # Ajouter les résultats au DataFrame
-                    df['tier2_live_links'] = tier2_live_links
-                    df['tier2_live_refdomains'] = tier2_live_refdomains
-                    status_text.text("Analyse des liens de Niveau 2 terminée!")
-                
-                # Section 0: Total des backlinks
-                st.header(f"📈 Total des Backlinks : {len(df)}")
+                    # Section 0: Total des backlinks
+                    st.header(f"📈 Total des Backlinks : {len(df)}")
 
-                # Section 1: Distribution temporelle
-                st.subheader("📅 Distribution temporelle des backlinks")
-                
-                # Analyse par année
-                yearly_data = analyze_yearly_distribution(df)
-                
-                # Affichage du tableau des backlinks par année
-                st.markdown("### # de backlinks créés par année")
-                st.dataframe(
-                    yearly_data,
-                    hide_index=True,
-                    column_config={
-                        'Année': 'Année',
-                        '# de liens': 'Nombre de liens',
-                        'CUMULÉS': 'Cumulés'
+                    # Section 1: Distribution temporelle
+                    st.subheader("📅 Distribution temporelle des backlinks")
+                    yearly_data = analyze_yearly_distribution(df)
+                    
+                    st.markdown("### # de backlinks créés par année")
+                    st.dataframe(
+                        yearly_data,
+                        hide_index=True,
+                        column_config={
+                            'Année': 'Année',
+                            '# de liens': 'Nombre de liens',
+                            'CUMULÉS': 'Cumulés'
+                        }
+                    )
+                    
+                    st.plotly_chart(create_yearly_plot(yearly_data))
+
+                    # Section 2: Distribution des DR
+                    st.subheader("📊 Nombre de Backlinks en fonction du DR")
+                    dr_distribution = analyze_dr_distribution(df)
+                    col1, col2, col3, col4 = st.columns(4)
+                    cols = [col1, col2, col3, col4]
+                    for i, (range_name, count) in enumerate(dr_distribution.items()):
+                        cols[i].metric(range_name, count)
+
+                    # Section 3: Distribution des Tiers
+                    if 'tier2_live_links' in df.columns:
+                        st.subheader("🔗 Nombre de liens avec des liens de niveau 2")
+                        links_distribution = analyze_tier_distribution(df, 'tier2_live_links')
+                        col1, col2, col3, col4 = st.columns(4)
+                        cols = [col1, col2, col3, col4]
+                        for i, (range_name, count) in enumerate(links_distribution.items()):
+                            cols[i].metric(range_name.replace('tier2_live_links', 'Live backlinks Tier2'), count)
+                        
+                        st.subheader("🔗 Nombre de liens avec des refering_domains de niveau 2")
+                        refdomains_distribution = analyze_tier_distribution(df, 'tier2_live_refdomains')
+                        col1, col2, col3, col4 = st.columns(4)
+                        cols = [col1, col2, col3, col4]
+                        for i, (range_name, count) in enumerate(refdomains_distribution.items()):
+                            cols[i].metric(range_name.replace('tier2_live_refdomains', 'RD Tier2'), count)
+
+                    # Section 4: Métriques maximales
+                    st.subheader("🏆 Métriques Maximales")
+                    max_metrics = get_max_metrics(df)
+                    col1, col2 = st.columns(2)
+                    col1.metric("MAX(Domain Rating)", max_metrics['max_dr'])
+                    col2.metric("MAX(Tier2)", max_metrics['max_tier'])
+                    
+                    # Affichage du backlink avec le DR le plus élevé
+                    st.markdown(f"### 🔗 Backlink le plus puissant (DR {max_metrics['max_dr_value']:.1f})")
+                    st.write(max_metrics['max_dr_url'])
+                    
+                    # Section 5: Tableau détaillé
+                    st.subheader("📋 Liste détaillée des Backlinks")
+                    column_config = {
+                        "domain_rating_source": "DR Source",
+                        "url_from": "URL Source",
+                        "first_seen": "Première vue",
+                        "link_type": "Type de lien"
                     }
-                )
-                
-                # Graphique de l'évolution
-                st.plotly_chart(create_yearly_plot(yearly_data))
-
-                # Section 2: Distribution des DR
-                st.subheader("📊 Nombre de Backlinks en fonction du DR")
-                dr_distribution = analyze_dr_distribution(df)
-                col1, col2, col3, col4 = st.columns(4)
-                cols = [col1, col2, col3, col4]
-                for i, (range_name, count) in enumerate(dr_distribution.items()):
-                    cols[i].metric(range_name, count)
-
-                # Section 3: Distribution des Tiers
-                if 'tier2_live_links' in df.columns:
-                    st.subheader("🔗 Nombre de liens avec des liens de niveau 2")
-                    links_distribution = analyze_tier_distribution(df, 'tier2_live_links')
-                    col1, col2, col3, col4 = st.columns(4)
-                    cols = [col1, col2, col3, col4]
-                    for i, (range_name, count) in enumerate(links_distribution.items()):
-                        cols[i].metric(range_name.replace('tier2_live_links', 'Live backlinks Tier2'), count)
                     
-                    st.subheader("🔗 Nombre de liens avec des refering_domains de niveau 2")
-                    refdomains_distribution = analyze_tier_distribution(df, 'tier2_live_refdomains')
-                    col1, col2, col3, col4 = st.columns(4)
-                    cols = [col1, col2, col3, col4]
-                    for i, (range_name, count) in enumerate(refdomains_distribution.items()):
-                        cols[i].metric(range_name.replace('tier2_live_refdomains', 'RD Tier2'), count)
-
-                # Section 4: Métriques maximales
-                st.subheader("🏆 Métriques Maximales")
-                max_metrics = get_max_metrics(df)
-                col1, col2 = st.columns(2)
-                col1.metric("MAX(Domain Rating)", max_metrics['max_dr'])
-                col2.metric("MAX(Tier2)", max_metrics['max_tier'])
-                
-                # Affichage du backlink avec le DR le plus élevé
-                st.markdown(f"### 🔗 Backlink le plus puissant (DR {max_metrics['max_dr_value']:.1f})")
-                st.write(max_metrics['max_dr_url'])
-                
-                # Section 5: Tableau détaillé
-                st.subheader("📋 Liste détaillée des Backlinks")
-                column_config = {
-                    "domain_rating_source": "DR Source",
-                    "url_from": "URL Source",
-                    "first_seen": "Première vue",
-                    "link_type": "Type de lien"
-                }
-                
-                # Ajouter les colonnes Tier2 si elles existent
-                if 'tier2_live_links' in df.columns:
-                    column_config.update({
-                        "tier2_live_links": "Backlinks live de niveau 2",
-                        "tier2_live_refdomains": "Refering domains live de niveau 2"
-                    })
-                
-                st.dataframe(
-                    df,
-                    column_config=column_config,
-                    hide_index=True
-                )
-                
-                # Export CSV
-                csv = df.to_csv(index=False)
-                st.download_button(
-                    "💾 Télécharger les données (CSV)",
-                    csv,
-                    f"backlinks_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                    "text/csv"
-                )
-            else:
-                st.error("Erreur lors de la récupération des données. Vérifiez l'URL et réessayez.")
+                    # Ajouter les colonnes Tier2 si elles existent
+                    if 'tier2_live_links' in df.columns:
+                        column_config.update({
+                            "tier2_live_links": "Backlinks live de niveau 2",
+                            "tier2_live_refdomains": "Refering domains live de niveau 2"
+                        })
+                    
+                    st.dataframe(
+                        df,
+                        column_config=column_config,
+                        hide_index=True
+                    )
+                    
+                    # Export CSV
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        "💾 Télécharger les données (CSV)",
+                        csv,
+                        f"backlinks_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        "text/csv"
+                    )
+                else:
+                    st.error("Erreur lors de la récupération des données. Vérifiez l'URL et réessayez.")
+        except Exception as e:
+            logger.error(f"Erreur lors de l'analyse: {str(e)}")
+            st.error(f"Une erreur s'est produite: {str(e)}")
     else:
         st.warning("Veuillez entrer une URL à analyser.")
