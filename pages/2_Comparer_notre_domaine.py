@@ -146,13 +146,15 @@ def get_our_domain_backlinks(our_domain, mode="subdomains"):
         'Authorization': f"Bearer {AHREFS_API_KEY}"
     }
     
-    encoded_url = our_domain.replace(':', '%3A').replace('/', '%2F')
-    endpoint = (f"/v3/site-explorer/backlinks?"
+    encoded_url = encode_url_for_ahrefs(our_domain)
+    endpoint = (f"/v3/site-explorer/all-backlinks?"  # Changement ici
                f"select=domain_rating_source,url_from,first_seen,link_type,url_to&"
                f"target={encoded_url}&"
                f"mode={mode}&"
-               f"history=live")
+               f"history=live&"
+               f"aggregation=all")  # Ajout du paramètre aggregation
     
+    logger.info(f"Requête pour notre domaine: {endpoint}")
     return make_ahrefs_request(endpoint, headers)
 
 @st.cache_data(ttl=3600)
